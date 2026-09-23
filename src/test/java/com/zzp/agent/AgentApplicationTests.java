@@ -25,10 +25,11 @@ class AgentApplicationTests {
     void parseDocument() throws IOException {
         String path = "D:\\datum\\AI-Agents-in-Depth-zh-CN.pdf";
 //        String path = "D:\\datum\\中华人工共和国刑法.pdf";
+//        String path = "D:\\datum\\家庭教育促进法.pdf";
 //        String path = "D:\\datum\\导游面试问答.docx";
 //        String path = "D:\\datum\\中华人民共和国治安管理处罚法_20250627.docx";
 //        String path = "D:\\datum\\古代诗歌常用意象.txt";
-//        String path = "D:\\datum\\家庭教育促进法.pdf";
+
         InputStream in = Files.newInputStream(Path.of(path));
         ParseResult r = documentParseService.parse(path,in);
         System.out.println("==== 文件: " + r.fileName());
