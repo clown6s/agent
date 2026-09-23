@@ -2,6 +2,8 @@ package com.zzp.agent;
 
 import com.zzp.agent.document.parser.DocumentParseService;
 import com.zzp.agent.document.parser.ParseResult;
+import com.zzp.agent.document.split.ChunkingService;
+import com.zzp.agent.document.split.TextChunk;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -11,6 +13,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.skyscreamer.jsonassert.JSONAssert.assertEquals;
@@ -20,6 +23,9 @@ class AgentApplicationTests {
 
     @Autowired
     DocumentParseService documentParseService;
+
+    @Autowired
+    ChunkingService chunkingService;
 
     @Test
     void parseDocument() throws IOException {
@@ -40,6 +46,23 @@ class AgentApplicationTests {
         System.out.println(r.text());
         System.out.println("==== 内容 end   ====");
         assertTrue(r.length() > 0);
+    }
+
+    @Test
+    void parseText() throws IOException {
+        String path = "D:\\datum\\AI-Agents-in-Depth-zh-CN.pdf";
+//        String path = "D:\\datum\\中华人工共和国刑法.pdf";
+//        String path = "D:\\datum\\家庭教育促进法.pdf";
+//        String path = "D:\\datum\\导游面试问答.docx";
+//        String path = "D:\\datum\\中华人民共和国治安管理处罚法_20250627.docx";
+//        String path = "D:\\datum\\古代诗歌常用意象.txt";
+        InputStream in = Files.newInputStream(Path.of(path));
+        ParseResult r = documentParseService.parse(path,in);
+        List<TextChunk> chunk = chunkingService.chunk(r.documentId(), r.text());
+        for (TextChunk textChunk : chunk) {
+            System.out.println("==================================");
+            System.out.println(textChunk);
+        }
     }
 
 }
