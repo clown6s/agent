@@ -1,6 +1,6 @@
 package com.zzp.agent.document.parser;
 
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 
-@Component
+@Service
 public class DocumentParseService {
 
     private final Map<DocumentType, DocumentParser> parserMap;
@@ -24,6 +24,7 @@ public class DocumentParseService {
             }
         }
     }
+
     /** 按文件路径解析，扩展名决定走哪个解析器 */
     public ParseResult parse(String filePath) throws IOException {
         String fileName = Paths.get(filePath).getFileName().toString();

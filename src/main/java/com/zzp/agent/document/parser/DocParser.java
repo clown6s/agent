@@ -8,7 +8,6 @@ import java.io.InputStream;
 import java.util.Set;
 
 @Service
-
 public class DocParser implements DocumentParser{
     @Override
     public String parse(InputStream in) throws IOException {

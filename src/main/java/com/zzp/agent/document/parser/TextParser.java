@@ -18,5 +18,4 @@ public class TextParser implements DocumentParser{
     public Set<DocumentType> supportedTypes() {
         return Set.of(DocumentType.TXT, DocumentType.MD);
     }
-
 }
