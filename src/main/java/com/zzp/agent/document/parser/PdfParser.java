@@ -14,8 +14,10 @@ import java.util.Set;
 @Service
 public class PdfParser implements DocumentParser {
 
-    /** 页眉高度 = 页面高度的前 10%（可调） */
+    /** 页眉高度 = 页面高度的前 8%（可调） */
     private static final float HEADER_RATIO = 0.08f;
+    /** 页脚高度 = 页面高度的后 8%（可调） */
+    private static final float FOOTER_RATIO = 0.08f;
 
     @Override
     public String parse(InputStream in) throws IOException {
@@ -43,8 +45,9 @@ public class PdfParser implements DocumentParser {
 
         @Override
         protected void processTextPosition(TextPosition text) {
-            if (text.getYDirAdj() < pageHeight * HEADER_RATIO) {
-                return; // 位于页眉区域，不进正文
+            float y = text.getYDirAdj();
+            if (y < pageHeight * HEADER_RATIO || y > pageHeight * (1 - FOOTER_RATIO)) {
+                return; // 位于页眉或页脚区域，不进正文
             }
             super.processTextPosition(text);
         }
