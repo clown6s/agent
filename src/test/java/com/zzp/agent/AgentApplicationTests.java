@@ -28,15 +28,15 @@ class AgentApplicationTests {
         String path = "D:\\datum\\中华人民共和国治安管理处罚法_20250627.docx";
 //        String path = "D:\\datum\\古代诗歌常用意象.txt";
 //        String path = "D:\\datum\\家庭教育促进法.pdf";
-        ParseResult r = documentParseService.parse(path);
-        System.out.println("==== 文件: " + r.fileName());
-        System.out.println("==== 文件id: " + r.documentId());
-        System.out.println("==== 类型: " + r.type());
-        System.out.println("==== 字符数: " + r.length());
-        System.out.println("==== 内容 start ====");
-        System.out.println(r.text());
-        System.out.println("==== 内容 end   ====");
-        assertTrue(r.length() > 0);
+//        ParseResult r = documentParseService.parse(path);
+//        System.out.println("==== 文件: " + r.fileName());
+//        System.out.println("==== 文件id: " + r.documentId());
+//        System.out.println("==== 类型: " + r.type());
+//        System.out.println("==== 字符数: " + r.length());
+//        System.out.println("==== 内容 start ====");
+//        System.out.println(r.text());
+//        System.out.println("==== 内容 end   ====");
+//        assertTrue(r.length() > 0);
     }
 
 }

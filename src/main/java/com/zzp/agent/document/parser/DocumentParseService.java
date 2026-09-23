@@ -36,18 +36,15 @@ public class DocumentParseService {
     }
 
     /** 按文件路径解析，扩展名决定走哪个解析器 */
-    public ParseResult parse(String filePath) throws IOException {
-        String fileName = Paths.get(filePath).getFileName().toString();
+    public ParseResult parse(String fileName, InputStream in) throws IOException {
         DocumentType type = DocumentType.fromFileName(fileName);
         DocumentParser parser = parserMap.get(type);
         if (parser == null) {
             throw new UnsupportedOperationException("没有 " + type + " 的解析器");
         }
-        try (InputStream in = Files.newInputStream(Path.of(filePath))) {
-            String text = parser.parse(in);
-            String documentId = computeDocumentId(text);
-            return new ParseResult(documentId, fileName, type, text, text.length());
-        }
+        String text = parser.parse(in);
+        String documentId = computeDocumentId(text);
+        return new ParseResult(documentId, fileName, type, text, text.length());
     }
 
     /** 对解析文本计算 SHA-256 指纹，作为内容唯一标识 documentId */
