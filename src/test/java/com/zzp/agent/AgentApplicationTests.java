@@ -30,6 +30,7 @@ class AgentApplicationTests {
 //        String path = "D:\\datum\\家庭教育促进法.pdf";
         ParseResult r = documentParseService.parse(path);
         System.out.println("==== 文件: " + r.fileName());
+        System.out.println("==== 文件id: " + r.documentId());
         System.out.println("==== 类型: " + r.type());
         System.out.println("==== 字符数: " + r.length());
         System.out.println("==== 内容 start ====");
