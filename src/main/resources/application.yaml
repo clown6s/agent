@@ -1,3 +1,10 @@
 spring:
   application:
     name: agent
+
+
+elaasticsearch:
+  url: ${ELASTIC_URL:https://localhost:9200}
+  userName: ${ELASTIC_USER:}
+  password: ${ELASTIC_PASSWORD:}
+  caCert: ${CA_CERTS:/path/to/http_ca.crt}
