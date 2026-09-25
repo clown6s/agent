@@ -8,3 +8,16 @@ elaasticsearch:
   userName: ${ELASTIC_USER:}
   password: ${ELASTIC_PASSWORD:}
   caCert: ${CA_CERTS:/path/to/http_ca.crt}
+  index: ${ELASTIC_INDEX}
+
+milvus:
+  uri: ${MILVUS_URI}
+  token: ${MILVUS_TOKEN}
+  dbName: ${MILVUS_DB}
+  collection: ${MILVUS_COLLECTION}
+  dim: ${MILVUS_DIM}
+
+embedding:
+  uri: ${EMBEDDING_BASE_URL}
+  apiKey: ${SILICONFLOW_API_KEY}
+  model: ${EMBEDDING_MODEL}
