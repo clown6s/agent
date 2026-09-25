@@ -2,6 +2,8 @@ package com.zzp.agent.document.intake;
 
 import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
+import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import co.elastic.clients.json.JsonpSerializer;
@@ -20,11 +22,14 @@ import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.HasCollectionReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
 import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.response.InsertResp;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 文档摄入服务：把一份文档走完「解析 → 切块 → embedding → 写 ES(全文) → 写 Milvus(向量)」。
@@ -42,14 +47,16 @@ public class DocumentIntakeService {
 
     private final String esIndex;
     private final String milvusCollection;
+    private final int milvusDim;
 
     public DocumentIntakeService(DocumentParseService parseService,
                                  ChunkingService chunkingService,
                                  EmbeddingService embeddingService,
                                  ElasticsearchAsyncClient esClient,
                                  MilvusClientV2 milvusClient,
-                                 @Value("${elaasticsearch.index}") String esIndex,
-                                 @Value("${milvus.collection}") String milvusCollection) {
+                                 @Value("${elasticsearch.index}") String esIndex,
+                                 @Value("${milvus.collection}") String milvusCollection,
+                                 @Value("${milvus.dim}") int milvusDim) {
         this.parseService = parseService;
         this.chunkingService = chunkingService;
         this.embeddingService = embeddingService;
@@ -57,6 +64,7 @@ public class DocumentIntakeService {
         this.milvusClient = milvusClient;
         this.esIndex = esIndex;
         this.milvusCollection = milvusCollection;
+        this.milvusDim = milvusDim;
     }
 
     /**
@@ -67,20 +75,30 @@ public class DocumentIntakeService {
         ParseResult parsed = parseService.parse(fileName, in);
         List<TextChunk> chunks = chunkingService.chunk(parsed.documentId(), parsed.text());
 
-        // 2) 建索引/集合（Milvus 维度取首次 embedding 的实际维度）
-        int dim = ensureIndices(chunks);
+        // 2) 建索引/集合（Milvus 维度取配置 milvusDim）
+        ensureIndices();
 
-        // 3) 每块 embedding + 写 ES + 写 Milvus
+        // 3) 批量 embedding：先全部向量化，维度统一校验
+        List<float[]> vecs = new ArrayList<>(chunks.size());
         for (TextChunk chunk : chunks) {
             float[] vec = embeddingService.embed(chunk.text());
-            indexToEs(chunk);
-            insertToMilvus(chunk, vec, dim);
+            if (vec.length != milvusDim) {
+                throw new IllegalStateException("embedding 维度 " + vec.length
+                        + " 与集合维度 " + milvusDim + " 不一致");
+            }
+            vecs.add(vec);
         }
+
+        // 4) 批量写 ES
+        indexToEsBatch(chunks);
+        // 5) 批量写 Milvus
+        insertToMilvusBatch(chunks, vecs);
+
         return new IntakeResult(parsed.documentId(), chunks.size());
     }
 
-    /** 确保 ES index 与 Milvus collection 存在；返回 Milvus 向量维度。 */
-    private int ensureIndices(List<TextChunk> chunks) throws Exception {
+    /** 确保 ES index 与 Milvus collection 存在。 */
+    private void ensureIndices() throws Exception {
         // ES index
         boolean esExists = esClient.indices().exists(b -> b.index(esIndex)).get().value();
         if (!esExists) {
@@ -89,16 +107,12 @@ public class DocumentIntakeService {
         // Milvus collection
         boolean mExists = milvusClient.hasCollection(
                 HasCollectionReq.builder().collectionName(milvusCollection).build());
-        if (mExists) {
-            // 取现有维度（简化：不深查，用已记录的 dim）
-            throw new IllegalStateException(
-                    "Milvus collection 已存在，请自行确认维度一致: " + milvusCollection);
+        if (!mExists) {
+            // 未创建：用配置的 milvusDim 建集合 + 索引
+            createMilvusCollection(milvusDim);
+            createMilvusIndex();
         }
-        // 未创建：先用第一块 embedding 定维度
-        float[] first = embeddingService.embed(chunks.get(0).text());
-        createMilvusCollection(first.length);
-        createMilvusIndex();
-        return first.length;
+        // 已存在则不重建（维度由配置 milvusDim 与 embedding 校验保证一致）
     }
 
     private void createMilvusCollection(int dim) {
@@ -112,8 +126,8 @@ public class DocumentIntakeService {
                                         .name("documentId").dataType(DataType.VarChar)
                                         .maxLength(64).build(),
                                 CreateCollectionReq.FieldSchema.builder()
-                                        .name("text").dataType(DataType.VarChar)
-                                        .maxLength(65535).build(),
+                                        .name("text").dataType(DataType.Text)
+                                        .build(),
                                 CreateCollectionReq.FieldSchema.builder()
                                         .name("embedding").dataType(DataType.FloatVector)
                                         .dimension(dim).build()
@@ -157,41 +171,49 @@ public class DocumentIntakeService {
                 .mappings(mapping)).get();
     }
 
-    /** 写 ES：id=chunkId, body 用 DocSource(document_id,text)，经 JsonpSerializer 落库。 */
-    private void indexToEs(TextChunk chunk) {
+    /** 批量写 ES：id=chunkId, body 用 DocSource(document_id,text)，经 JsonpSerializer 落库；校验写入结果。 */
+    private void indexToEsBatch(List<TextChunk> chunks) {
         JsonpSerializer<DocSource> ser = (value, gen, mapper) -> mapper.serialize(value, gen);
-        IndexRequest<DocSource> request = IndexRequest.of(b -> b
-                .index(esIndex)
-                .id(chunk.chunkId())
-                .document(new DocSource(chunk.documentId(), chunk.text()))
-                .tDocumentSerializer(ser));
-        esClient.index(request).join(); // 摄入为同步流程，阻塞等待写回完成
+        List<CompletableFuture<IndexResponse>> futures = new ArrayList<>(chunks.size());
+        for (TextChunk chunk : chunks) {
+            IndexRequest<DocSource> request = IndexRequest.of(b -> b
+                    .index(esIndex)
+                    .id(chunk.chunkId())
+                    .document(new DocSource(chunk.documentId(), chunk.text()))
+                    .tDocumentSerializer(ser));
+            futures.add(esClient.index(request));
+        }
+        // 并行等待全部写回完成，并校验每个结果
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        for (int i = 0; i < futures.size(); i++) {
+            Result r = futures.get(i).join().result();
+            if (r != Result.Created && r != Result.Updated) {
+                throw new IllegalStateException("ES 写入失败: chunkId=" + chunks.get(i).chunkId()
+                        + " result=" + r);
+            }
+        }
     }
 
-    /** 写 Milvus：一行 JsonObject（chunkId/documentId/text/embedding）。 */
-    private void insertToMilvus(TextChunk chunk, float[] vec, int dim) {
-        if (vec.length != dim) {
-            throw new IllegalStateException("embedding 维度 " + vec.length
-                    + " 与集合维度 " + dim + " 不一致");
+    /** 批量写 Milvus：一次 InsertReq 传多行 JsonObject（chunkId/documentId/text/embedding），校验插入条数。 */
+    private void insertToMilvusBatch(List<TextChunk> chunks, List<float[]> vecs) {
+        List<JsonObject> rows = new ArrayList<>(chunks.size());
+        for (int i = 0; i < chunks.size(); i++) {
+            TextChunk chunk = chunks.get(i);
+            JsonObject row = new JsonObject();
+            row.addProperty("chunkId", chunk.chunkId());
+            row.addProperty("documentId", chunk.documentId());
+            row.addProperty("text", chunk.text());
+            row.add("embedding", GSON.toJsonTree(vecs.get(i)));  // 直接存 float[]，贴合 FloatVector
+            rows.add(row);
         }
-        JsonObject row = new JsonObject();
-        row.addProperty("chunkId", chunk.chunkId());
-        row.addProperty("documentId", chunk.documentId());
-        row.addProperty("text", chunk.text());
-        row.add("embedding", GSON.toJsonTree(toDoubleArray(vec)));
-
-        milvusClient.insert(InsertReq.builder()
+        InsertResp resp = milvusClient.insert(InsertReq.builder()
                 .collectionName(milvusCollection)
-                .data(List.of(row))
+                .data(rows)
                 .build());
-    }
-
-    private double[] toDoubleArray(float[] f) {
-        double[] d = new double[f.length];
-        for (int i = 0; i < f.length; i++) {
-            d[i] = f[i];
+        if (resp.getInsertCnt() != chunks.size()) {
+            throw new IllegalStateException("Milvus 插入条数异常: 期望 " + chunks.size()
+                    + " 实际 " + resp.getInsertCnt());
         }
-        return d;
     }
 
     /** 摄入结果。 */

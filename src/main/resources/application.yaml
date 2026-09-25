@@ -3,7 +3,7 @@ spring:
     name: agent
 
 
-elaasticsearch:
+elasticsearch:
   url: ${ELASTIC_URL:https://localhost:9200}
   userName: ${ELASTIC_USER:}
   password: ${ELASTIC_PASSWORD:}

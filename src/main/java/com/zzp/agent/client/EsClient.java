@@ -14,16 +14,16 @@ import java.util.List;
 @Configuration
 public class EsClient {
 
-    @Value("${elaasticsearch.url}")
+    @Value("${elasticsearch.url}")
     private String url;
 
-    @Value("${elaasticsearch.userName}")
+    @Value("${elasticsearch.userName}")
     private String username;
 
-    @Value("${elaasticsearch.password}")
+    @Value("${elasticsearch.password}")
     private String password;
 
-    @Value("${elaasticsearch.caCert}")
+    @Value("${elasticsearch.caCert}")
     private String caCert;
 
     @Bean

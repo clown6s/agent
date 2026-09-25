@@ -1,5 +1,6 @@
 package com.zzp.agent.embedding;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -7,13 +8,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
-import java.util.Map;
 
 /**
- * Embedding 服务：调用 SiliconFlow 的 OpenAI 兼容 /embeddings 接口，
- * 把一段文本向量化。
+ * Embedding 服务：调用 SiliconFlow 的 OpenAI 兼容 /embeddings 接口，把一段文本向量化。
  *
- * <p>配置从环境变量注入（对应 .env：EMBEDDING_BASE_URL / SILICONFLOW_API_KEY / EMBEDDING_MODEL）。
+ * <p>响应用嵌套 DTO record 反序列化（编译期锁定字段名），替代手拆 Map。
  */
 @Service
 public class EmbeddingService {
@@ -34,29 +33,36 @@ public class EmbeddingService {
 
     /** 对单段文本做向量化，返回 float 向量。 */
     public float[] embed(String input) {
-        Map<String, Object> body = Map.of(
-                "model", model,
-                "input", List.of(input));
-
-        Map<?, ?> resp = restClient.post()
+        EmbeddingRequest request = new EmbeddingRequest(model, List.of(input));
+        EmbeddingResponse resp = restClient.post()
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
+                .body(request)
                 .retrieve()
-                .body(Map.class);
+                .body(EmbeddingResponse.class);
 
-        if (resp == null || !(resp.get("data") instanceof List<?> data) || data.isEmpty()) {
-            throw new IllegalStateException("Embedding 响应为空: " + resp);
+        if (resp == null || resp.datas() == null || resp.datas().isEmpty()) {
+            throw new IllegalStateException("Embedding 响应为空或缺少 data: " + resp);
         }
-        Map<?, ?> first = (Map<?, ?>) data.get(0);
-        Object emb = first.get("embedding");
-        if (!(emb instanceof List<?> vec)) {
+        List<Float> vec = resp.datas().get(0).embedding();
+        if (vec == null) {
             throw new IllegalStateException("Embedding 响应缺少 embedding 字段");
         }
         float[] out = new float[vec.size()];
         for (int i = 0; i < vec.size(); i++) {
-            out[i] = ((Number) vec.get(i)).floatValue();
+            out[i] = vec.get(i);
         }
         return out;
+    }
+
+    /** 请求体：OpenAI 兼容格式。 */
+    private record EmbeddingRequest(String model, @JsonProperty("input") List<String> inputs) {
+    }
+
+    /** 响应体：{ "data": [ { "embedding": [...] } ] }。 */
+    private record EmbeddingResponse(@JsonProperty("data") List<EmbeddingData> datas) {
+    }
+
+    private record EmbeddingData(List<Float> embedding) {
     }
 }
