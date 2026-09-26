@@ -1,9 +1,11 @@
 package com.zzp.agent.document.intake;
 
 import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
+import co.elastic.clients.elasticsearch._types.Result;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.DeleteByQueryRequest;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
-import co.elastic.clients.elasticsearch._types.Result;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import co.elastic.clients.json.JsonpSerializer;
@@ -21,10 +23,13 @@ import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.HasCollectionReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
+import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.InsertReq;
 import io.milvus.v2.service.vector.response.InsertResp;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -36,6 +41,8 @@ import java.util.concurrent.CompletableFuture;
  */
 @Service
 public class DocumentIntakeService {
+
+    private static final Logger log = LoggerFactory.getLogger(DocumentIntakeService.class);
 
     private static final Gson GSON = new Gson();
 
@@ -69,32 +76,69 @@ public class DocumentIntakeService {
 
     /**
      * 摄入一份文档。返回 {@link IntakeResult}。
+     * 任一步失败（写入 ES/Milvus 之后）会补偿删除本 documentId 已写入的块，保证不留半份数据。
      */
     public IntakeResult intake(String fileName, InputStream in) throws Exception {
         // 1) 解析 + 切块
         ParseResult parsed = parseService.parse(fileName, in);
         List<TextChunk> chunks = chunkingService.chunk(parsed.documentId(), parsed.text());
+        String documentId = parsed.documentId();
 
-        // 2) 建索引/集合（Milvus 维度取配置 milvusDim）
-        ensureIndices();
+        try {
+            // 2) 建索引/集合（Milvus 维度取配置 milvusDim）
+            ensureIndices();
 
-        // 3) 批量 embedding：先全部向量化，维度统一校验
-        List<float[]> vecs = new ArrayList<>(chunks.size());
-        for (TextChunk chunk : chunks) {
-            float[] vec = embeddingService.embed(chunk.text());
-            if (vec.length != milvusDim) {
-                throw new IllegalStateException("embedding 维度 " + vec.length
-                        + " 与集合维度 " + milvusDim + " 不一致");
+            // 3) 批量 embedding：先全部向量化，维度统一校验
+            List<float[]> vecs = new ArrayList<>(chunks.size());
+            for (TextChunk chunk : chunks) {
+                float[] vec = embeddingService.embed(chunk.text());
+                if (vec.length != milvusDim) {
+                    throw new IllegalStateException("embedding 维度 " + vec.length
+                            + " 与集合维度 " + milvusDim + " 不一致");
+                }
+                vecs.add(vec);
             }
-            vecs.add(vec);
+
+            // 4) 批量写 ES
+            indexToEsBatch(chunks);
+            // 5) 批量写 Milvus
+            insertToMilvusBatch(chunks, vecs);
+
+            return new IntakeResult(documentId, chunks.size());
+        } catch (Exception e) {
+            // 失败：尽力补偿删除本 documentId 已写入 ES/Milvus 的块，不留半份；
+            // 补删失败只记日志，不覆盖原始异常
+            log.warn("DocumentIntake ingestion failed (fileName={}), compensating cleanup ...",
+                    fileName, e);
+            cleanup(documentId);
+            throw e;
         }
+    }
 
-        // 4) 批量写 ES
-        indexToEsBatch(chunks);
-        // 5) 批量写 Milvus
-        insertToMilvusBatch(chunks, vecs);
-
-        return new IntakeResult(parsed.documentId(), chunks.size());
+    /**
+     * 补偿删除：把该 documentId 在 ES 与 Milvus 中已写入的块全部删除。
+     * best-effort：任一侧失败仅记录日志，保证不因补删失败覆盖/丢失原始异常。
+     */
+    private void cleanup(String documentId) {
+        // Milvus：按 documentId 字段筛删
+        try {
+            milvusClient.delete(DeleteReq.builder()
+                    .collectionName(milvusCollection)
+                    .filter("documentId == \"" + documentId + "\"")
+                    .build());
+        } catch (Exception e) {
+            log.error("Milvus 补偿删除失败 documentId={}", documentId, e);
+        }
+        // ES：deleteByQuery 按 document_id 字段筛删
+        try {
+            DeleteByQueryRequest req = DeleteByQueryRequest.of(b -> b
+                    .index(esIndex)
+                    .query(q -> q.term(t -> t.field("document_id").value(documentId)))
+                    .refresh(true));
+            esClient.deleteByQuery(req).join();
+        } catch (Exception e) {
+            log.error("ES 补偿删除失败 documentId={}", documentId, e);
+        }
     }
 
     /** 确保 ES index 与 Milvus collection 存在。 */
