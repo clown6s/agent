@@ -1,11 +1,10 @@
 package com.zzp.agent.document.intake;
 
 import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
-import co.elastic.clients.elasticsearch._types.Result;
-import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.DeleteByQueryRequest;
-import co.elastic.clients.elasticsearch.core.IndexRequest;
-import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TypeMapping;
 import co.elastic.clients.json.JsonpSerializer;
@@ -35,7 +34,6 @@ import org.slf4j.LoggerFactory;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * 文档摄入服务：把一份文档走完「解析 → 切块 → embedding → 写 ES(全文) → 写 Milvus(向量)」。
@@ -56,6 +54,10 @@ public class DocumentIntakeService {
     private final String esIndex;
     private final String milvusCollection;
     private final int milvusDim;
+
+    /** 本 JVM 内 Milvus collection 是否已 load 过。loadCollection 是阻塞往返（sync, 超时 60s），
+     * 一旦加载成功便常驻，无需每次摄入重复触发。 */
+    private volatile boolean milvusLoaded = false;
 
     public DocumentIntakeService(DocumentParseService parseService,
                                  ChunkingService chunkingService,
@@ -80,24 +82,34 @@ public class DocumentIntakeService {
      * 任一步失败（写入 ES/Milvus 之后）会补偿删除本 documentId 已写入的块，保证不留半份数据。
      */
     public IntakeResult intake(String fileName, InputStream in) throws Exception {
-        // 1) 解析 + 切块
-        ParseResult parsed = parseService.parse(fileName, in);
-        List<TextChunk> chunks = chunkingService.chunk(parsed.documentId(), parsed.text());
+        // 1) 解析 + 切块（读完后关闭输入流，避免文件句柄泄漏）
+        ParseResult parsed;
+        List<TextChunk> chunks;
+        try (InputStream is = in) {
+            parsed = parseService.parse(fileName, is);
+            chunks = chunkingService.chunk(parsed.documentId(), parsed.text());
+        }
         String documentId = parsed.documentId();
 
         try {
             // 2) 建索引/集合（Milvus 维度取配置 milvusDim）
             ensureIndices();
 
-            // 3) 批量 embedding：先全部向量化，维度统一校验
-            List<float[]> vecs = new ArrayList<>(chunks.size());
+            // 3) 批量 embedding：一次请求向量化全部块（SiliconFlow 支持 input 数组），逐块校验维度
+            List<String> texts = new ArrayList<>(chunks.size());
             for (TextChunk chunk : chunks) {
-                float[] vec = embeddingService.embed(chunk.text());
+                texts.add(chunk.text());
+            }
+            List<float[]> vecs = embeddingService.embedAll(texts);
+            if (vecs.size() != chunks.size()) {
+                throw new IllegalStateException("embedding 返回条数 " + vecs.size()
+                        + " 与块数 " + chunks.size() + " 不一致");
+            }
+            for (float[] vec : vecs) {
                 if (vec.length != milvusDim) {
                     throw new IllegalStateException("embedding 维度 " + vec.length
                             + " 与集合维度 " + milvusDim + " 不一致");
                 }
-                vecs.add(vec);
             }
 
             // 4) 批量写 ES
@@ -161,9 +173,13 @@ public class DocumentIntakeService {
 
         // Milvus：collection 创建后必须 load 才能 search/query/delete（insert 可不用）。
         // 无论新建还是已存在，都先加载，否则后续写入/补偿删除会报 Collection Not Loaded。
-        milvusClient.loadCollection(LoadCollectionReq.builder()
-                .collectionName(milvusCollection)
-                .build());
+        // 用 milvusLoaded 缓存：仅首次阻塞加载一次，后续摄入直接复用（集合常驻内存）。
+        if (!milvusLoaded) {
+            milvusClient.loadCollection(LoadCollectionReq.builder()
+                    .collectionName(milvusCollection)
+                    .build());
+            milvusLoaded = true;
+        }
     }
 
     private void createMilvusCollection(int dim) {
@@ -224,26 +240,23 @@ public class DocumentIntakeService {
                 .mappings(mapping)).get();
     }
 
-    /** 批量写 ES：id=chunkId, body 用 DocSource(document_id,text)，经 JsonpSerializer 落库；校验写入结果。 */
+    /**
+     * 批量写 ES：一次 _bulk 投递所有块（id=chunkId, body 用 DocSource(document_id,text)）。
+     * 逐项校验写入结果，任一失败抛错（由上层触发补偿删除）。
+     */
     private void indexToEsBatch(List<TextChunk> chunks) {
-        JsonpSerializer<DocSource> ser = (value, gen, mapper) -> mapper.serialize(value, gen);
-        List<CompletableFuture<IndexResponse>> futures = new ArrayList<>(chunks.size());
-        for (TextChunk chunk : chunks) {
-            IndexRequest<DocSource> request = IndexRequest.of(b -> b
-                    .index(esIndex)
-                    .id(chunk.chunkId())
-                    .document(new DocSource(chunk.documentId(), chunk.text()))
-                    .tDocumentSerializer(ser));
-            futures.add(esClient.index(request));
-        }
-        // 并行等待全部写回完成，并校验每个结果
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        for (int i = 0; i < futures.size(); i++) {
-            Result r = futures.get(i).join().result();
-            if (r != Result.Created && r != Result.Updated) {
-                throw new IllegalStateException("ES 写入失败: chunkId=" + chunks.get(i).chunkId()
-                        + " result=" + r);
-            }
+        JsonpSerializer<Object> ser = (value, gen, mapper) -> mapper.serialize(value, gen);
+        BulkRequest req = BulkRequest.of(b -> b
+                .index(esIndex)
+                .operations(chunks.stream()
+                        .map(chunk -> BulkOperation.of(op -> op.index(i -> i
+                                .id(chunk.chunkId())
+                                .document(new DocSource(chunk.documentId(), chunk.text()))
+                                .tDocumentSerializer(ser))))
+                        .toList()));
+        BulkResponse resp = esClient.bulk(req).join();
+        if (resp.errors()) {
+            throw new IllegalStateException("ES _bulk 存在失败项, 首个错误: " + resp.items().getFirst().error());
         }
     }
 

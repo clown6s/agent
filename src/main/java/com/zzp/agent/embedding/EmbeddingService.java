@@ -10,15 +10,22 @@ import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Embedding 服务：调用 SiliconFlow 的 OpenAI 兼容 /embeddings 接口，把一段文本向量化。
+ * Embedding 服务：调用 SiliconFlow 的 OpenAI 兼容 /embeddings 接口，把文本向量化。
  *
- * <p>响应用嵌套 DTO record 反序列化（编译期锁定字段名），替代手拆 Map。
+ * <p>单条用 {@link #embed(String)}，批量用 {@link #embedAll(List)}（一次请求传数组，
+ * 实测 SiliconFlow 对 input 数组按序返回多条 data）。偶发限流/连接重置做指数退避重试。
  */
 @Service
 public class EmbeddingService {
+
+    /** 最大尝试次数（含首次）。 */
+    private static final int MAX_ATTEMPTS = 3;
+    /** 首次退避基数（毫秒），之后逐次翻倍。 */
+    private static final long BASE_BACKOFF_MS = 500L;
 
     private final String apiKey;
     private final String model;
@@ -48,26 +55,65 @@ public class EmbeddingService {
 
     /** 对单段文本做向量化，返回 float 向量。 */
     public float[] embed(String input) {
-        EmbeddingRequest request = new EmbeddingRequest(model, List.of(input));
-        EmbeddingResponse resp = restClient.post()
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(request)
-                .retrieve()
-                .body(EmbeddingResponse.class);
+        return embedAll(List.of(input)).getFirst();
+    }
+
+    /**
+     * 对多段文本做批量向量化，一次请求传数组，按序返回与入参一一对应的向量列表。
+     * 返回条数必须与入参一致，否则抛错（防止顺序错位）。
+     */
+    public List<float[]> embedAll(List<String> inputs) {
+        EmbeddingRequest request = new EmbeddingRequest(model, inputs);
+        EmbeddingResponse resp = postWithRetry(request);
 
         if (resp == null || resp.datas() == null || resp.datas().isEmpty()) {
             throw new IllegalStateException("Embedding 响应为空或缺少 data: " + resp);
         }
-        List<Float> vec = resp.datas().getFirst().embedding();
-        if (vec == null) {
-            throw new IllegalStateException("Embedding 响应缺少 embedding 字段");
+        if (resp.datas().size() != inputs.size()) {
+            throw new IllegalStateException("批量 embedding 返回条数不符: 期望 "
+                    + inputs.size() + " 实际 " + resp.datas().size());
         }
-        float[] out = new float[vec.size()];
-        for (int i = 0; i < vec.size(); i++) {
-            out[i] = vec.get(i);
+
+        List<float[]> out = new ArrayList<>(inputs.size());
+        for (EmbeddingData d : resp.datas()) {
+            List<Float> vec = d.embedding();
+            if (vec == null) {
+                throw new IllegalStateException("Embedding 响应缺少 embedding 字段");
+            }
+            float[] f = new float[vec.size()];
+            for (int i = 0; i < vec.size(); i++) {
+                f[i] = vec.get(i);
+            }
+            out.add(f);
         }
         return out;
+    }
+
+    /** 指数退避重试调一次 /embeddings，吞掉偶发的限流/连接重置。 */
+    private EmbeddingResponse postWithRetry(EmbeddingRequest request) {
+        Exception last = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                return restClient.post()
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(request)
+                        .retrieve()
+                        .body(EmbeddingResponse.class);
+            } catch (Exception e) {
+                last = e;
+                if (attempt < MAX_ATTEMPTS) {
+                    long wait = BASE_BACKOFF_MS << (attempt - 1);
+                    try {
+                        Thread.sleep(wait);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException("Embedding 在 " + MAX_ATTEMPTS + " 次尝试后仍失败", last);
     }
 
     /** 请求体：OpenAI 兼容格式。 */
