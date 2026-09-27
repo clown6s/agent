@@ -170,8 +170,8 @@ public class DocumentIntakeService {
                                         .name("documentId").dataType(DataType.VarChar)
                                         .maxLength(64).build(),
                                 CreateCollectionReq.FieldSchema.builder()
-                                        .name("text").dataType(DataType.Text)
-                                        .build(),
+                                        .name("text").dataType(DataType.VarChar)
+                                        .maxLength(16384).build(),
                                 CreateCollectionReq.FieldSchema.builder()
                                         .name("embedding").dataType(DataType.FloatVector)
                                         .dimension(dim).build()

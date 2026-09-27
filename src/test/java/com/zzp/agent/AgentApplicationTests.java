@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.zzp.agent.common.document.DocHitResponse;
 import com.zzp.agent.common.document.DocSource;
+import com.zzp.agent.document.intake.DocumentIntakeService;
 import com.zzp.agent.document.parser.DocumentParseService;
 import com.zzp.agent.document.parser.ParseResult;
 import com.zzp.agent.document.split.ChunkingService;
@@ -32,6 +33,9 @@ class AgentApplicationTests {
 
     @Autowired
     ElasticsearchAsyncClient elasticsearchAsyncClient;
+
+    @Autowired
+    DocumentIntakeService documentIntakeService;
 
     @Test
     void parseDocument() throws IOException {
@@ -92,6 +96,20 @@ class AgentApplicationTests {
             DocHitResponse d = DocHitResponse.from(hit);
             System.out.println(d);
         }
+    }
+
+    @Test
+    void intake() throws Exception {
+//        String path = "D:\\datum\\AI-Agents-in-Depth-zh-CN.pdf";
+//        String path = "D:\\datum\\中华人工共和国刑法.pdf";
+//        String path = "D:\\datum\\家庭教育促进法.pdf";
+//        String path = "D:\\datum\\导游面试问答.docx";
+//        String path = "D:\\datum\\中华人民共和国治安管理处罚法_20250627.docx";
+        String path = "D:\\datum\\古代诗歌常用意象.txt";
+        InputStream in = Files.newInputStream(Path.of(path));
+        DocumentIntakeService.IntakeResult intake = documentIntakeService.intake(path, in);
+
+        System.out.println("intake = " + intake);
     }
 
 }
