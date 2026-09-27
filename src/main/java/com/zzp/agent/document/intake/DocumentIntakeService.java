@@ -203,16 +203,18 @@ public class DocumentIntakeService {
     }
 
     /**
-     * 创建 ES index：text 字段用 ik 分词器（需 ES 服务器已安装 analysis-ik 插件）。
+     * 创建 ES index。字段与写入的 _source 结构对齐：
+     * <ul>
+     *   <li>{@code document_id}：keyword，可索引——cleanup 按它做 term 精确筛删，不能 index(false)；</li>
+     *   <li>{@code text}：用 ik 分词器做全文检索（需 ES 已安装 analysis-ik 插件）；</li>
+     * </ul>
+     * chunkId 不落映射：它就是 ES 文档 _id（doc id），无需作为存储字段。
      * 仅在 index 不存在时调用。
      */
     private void createEsIndex() throws Exception {
         TypeMapping mapping = TypeMapping.of(m -> m
-                .properties("chunkId", Property.of(p -> p.keyword(
-                        k -> k.index(false)          // 主键，不全文索引
-                )))
-                .properties("documentId", Property.of(p -> p.keyword(
-                        k -> k.index(false)
+                .properties("document_id", Property.of(p -> p.keyword(
+                        k -> k            // keyword 默认可索引，供 term 筛删
                 )))
                 .properties("text", Property.of(p -> p.text(
                         t -> t.analyzer("ik_max_word").searchAnalyzer("ik_smart")

@@ -1,7 +1,6 @@
 package com.zzp.agent.embedding;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import tools.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -50,11 +49,6 @@ public class EmbeddingService {
     /** 对单段文本做向量化，返回 float 向量。 */
     public float[] embed(String input) {
         EmbeddingRequest request = new EmbeddingRequest(model, List.of(input));
-        // 打印实际发送的请求体 JSON(排查编码/格式差异)
-        try {
-            String json = new ObjectMapper().writeValueAsString(request);
-        } catch (Exception ex) {
-        }
         EmbeddingResponse resp = restClient.post()
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                 .contentType(MediaType.APPLICATION_JSON)
