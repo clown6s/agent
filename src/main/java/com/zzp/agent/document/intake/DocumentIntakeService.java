@@ -22,6 +22,7 @@ import io.milvus.v2.common.DataType;
 import io.milvus.v2.common.IndexParam;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.HasCollectionReq;
+import io.milvus.v2.service.collection.request.LoadCollectionReq;
 import io.milvus.v2.service.index.request.CreateIndexReq;
 import io.milvus.v2.service.vector.request.DeleteReq;
 import io.milvus.v2.service.vector.request.InsertReq;
@@ -157,6 +158,12 @@ public class DocumentIntakeService {
             createMilvusIndex();
         }
         // 已存在则不重建（维度由配置 milvusDim 与 embedding 校验保证一致）
+
+        // Milvus：collection 创建后必须 load 才能 search/query/delete（insert 可不用）。
+        // 无论新建还是已存在，都先加载，否则后续写入/补偿删除会报 Collection Not Loaded。
+        milvusClient.loadCollection(LoadCollectionReq.builder()
+                .collectionName(milvusCollection)
+                .build());
     }
 
     private void createMilvusCollection(int dim) {
