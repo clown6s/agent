@@ -26,6 +26,9 @@ public class EmbeddingService {
     private static final int MAX_ATTEMPTS = 3;
     /** 首次退避基数（毫秒），之后逐次翻倍。 */
     private static final long BASE_BACKOFF_MS = 500L;
+    /** 单次请求最多嵌多少段文本。整份文档一次塞进一个数组会让请求体过大，SiliconFlow 会 500/超时，
+     * 故按此子批量切分，分批向量化后按序拼接（curl 实测 N≤100 可通过，取 64 留余量）。 */
+    private static final int BATCH_SIZE = 64;
 
     private final String apiKey;
     private final String model;
@@ -59,10 +62,21 @@ public class EmbeddingService {
     }
 
     /**
-     * 对多段文本做批量向量化，一次请求传数组，按序返回与入参一一对应的向量列表。
-     * 返回条数必须与入参一致，否则抛错（防止顺序错位）。
+     * 对多段文本做批量向量化，按序返回与入参一一对应的向量列表。
+     * 内部按 {@link #BATCH_SIZE} 子批量切分（防止整篇塞一个请求导致请求体过大被服务端拒绝），
+     * 分批向量化后按原顺序拼接；每批校验返回条数，防止顺序错位。
      */
     public List<float[]> embedAll(List<String> inputs) {
+        List<float[]> result = new ArrayList<>(inputs.size());
+        for (int from = 0; from < inputs.size(); from += BATCH_SIZE) {
+            int to = Math.min(from + BATCH_SIZE, inputs.size());
+            result.addAll(embedBatch(inputs.subList(from, to)));
+        }
+        return result;
+    }
+
+    /** 单次请求向量化一段（≤BATCH_SIZE）文本，返回与该段一一对应的向量列表。 */
+    private List<float[]> embedBatch(List<String> inputs) {
         EmbeddingRequest request = new EmbeddingRequest(model, inputs);
         EmbeddingResponse resp = postWithRetry(request);
 

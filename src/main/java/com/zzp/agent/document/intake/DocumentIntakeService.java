@@ -133,14 +133,20 @@ public class DocumentIntakeService {
      * best-effort：任一侧失败仅记录日志，保证不因补删失败覆盖/丢失原始异常。
      */
     private void cleanup(String documentId) {
-        // Milvus：按 documentId 字段筛删
+        // Milvus：按 documentId 字段筛删。删除在 Milvus 上要求集合已 load，
+        // 若首次失败（典型场景：本就因 load 未完成/集合被外部 drop 走到失败），
+        // 先 load 再重删一次，避免 ES 清了而 Milvus 留下孤儿向量。
         try {
-            milvusClient.delete(DeleteReq.builder()
-                    .collectionName(milvusCollection)
-                    .filter("documentId == \"" + documentId + "\"")
-                    .build());
+            deleteByDocumentId(documentId);
         } catch (Exception e) {
-            log.error("Milvus 补偿删除失败 documentId={}", documentId, e);
+            try {
+                milvusClient.loadCollection(LoadCollectionReq.builder()
+                        .collectionName(milvusCollection)
+                        .build());
+                deleteByDocumentId(documentId);
+            } catch (Exception e2) {
+                log.error("Milvus 补偿删除失败（load 后重试仍失败）documentId={}", documentId, e2);
+            }
         }
         // ES：deleteByQuery 按 document_id 字段筛删
         try {
@@ -152,6 +158,14 @@ public class DocumentIntakeService {
         } catch (Exception e) {
             log.error("ES 补偿删除失败 documentId={}", documentId, e);
         }
+    }
+
+    /** 按 documentId 筛删 Milvus 集合中的行。 */
+    private void deleteByDocumentId(String documentId) {
+        milvusClient.delete(DeleteReq.builder()
+                .collectionName(milvusCollection)
+                .filter("documentId == \"" + documentId + "\"")
+                .build());
     }
 
     /** 确保 ES index 与 Milvus collection 存在。 */
