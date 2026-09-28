@@ -28,7 +28,42 @@
     </scm>
     <properties>
         <java.version>25</java.version>
+        <!-- Spring AI Alibaba graph 依赖版本（对齐官方 v2.0.0-M1.1 线：Spring AI 2.0.0-M1 / Spring Boot 4.x，与本项目 Boot 4.1.1 匹配） -->
+        <spring-ai.version>2.0.0-M1</spring-ai.version>
+        <spring-ai-alibaba.version>2.0.0-M1.1</spring-ai-alibaba.version>
     </properties>
+
+    <!-- Spring AI 2.x 的 OpenAI/Core 属于 milestone，发布在 spring-milestones（非 Maven Central） -->
+    <repositories>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-bom</artifactId>
+                <version>${spring-ai-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -79,6 +114,26 @@
             <version>3.0.10</version>
         </dependency>
 
+        <!-- Spring AI Alibaba Graph：多步工作流图编排（StateGraph）。版本由上面 spring-ai-alibaba-bom 管理 -->
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-graph-core</artifactId>
+        </dependency>
+
+        <!-- LLM 模型接入（DeepSeek，OpenAI 兼容）：三项合起来才有可注入的 ChatModel + ChatClient bean。
+             版本都由上面 spring-ai-bom 管理。graph-core 已传递拉 spring-ai-deepseek，这里显式声明不依赖传递作用域。 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-deepseek</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-autoconfigure-model-deepseek</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-autoconfigure-model-chat-client</artifactId>
+        </dependency>
 
     </dependencies>
 

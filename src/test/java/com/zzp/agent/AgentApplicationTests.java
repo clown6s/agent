@@ -8,6 +8,7 @@ import com.zzp.agent.common.document.DocSource;
 import com.zzp.agent.document.intake.DocumentIntakeService;
 import com.zzp.agent.document.parser.DocumentParseService;
 import com.zzp.agent.document.parser.ParseResult;
+import com.zzp.agent.document.search.QueryDocumentService;
 import com.zzp.agent.document.split.ChunkingService;
 import com.zzp.agent.document.split.TextChunk;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,9 @@ class AgentApplicationTests {
 
     @Autowired
     DocumentIntakeService documentIntakeService;
+
+    @Autowired
+    QueryDocumentService queryDocumentService;
 
     @Test
     void parseDocument() throws IOException {
@@ -112,4 +116,15 @@ class AgentApplicationTests {
         System.out.println("intake = " + intake);
     }
 
+    /** 混合召回端到端：依赖 intake 已写入的数据，返回命中的文档块列表。 */
+    @Test
+    void recallTest() {
+        String query = "什么是 Agent？";
+        List<DocHitResponse> hits = queryDocumentService.getDocHitResponses(query, 5, null);
+        System.out.println("==== recall 命中 " + hits.size() + " 条 ====");
+        for (DocHitResponse hit : hits) {
+            System.out.println(hit);
+        }
+        assertTrue(!hits.isEmpty(), "召回至少命中 1 条");
+    }
 }

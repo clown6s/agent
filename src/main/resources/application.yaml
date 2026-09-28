@@ -1,6 +1,14 @@
 spring:
   application:
     name: agent
+  ai:
+    deepseek:
+      base-url: ${OPENAI_BASE_URL}
+      api-key: ${OPENAI_API_KEY}
+      chat:
+        options:
+          model: ${OPENAI_MODEL}
+
 
 
 elasticsearch:
@@ -21,3 +29,4 @@ embedding:
   uri: ${EMBEDDING_BASE_URL}
   apiKey: ${SILICONFLOW_API_KEY}
   model: ${EMBEDDING_MODEL}
+

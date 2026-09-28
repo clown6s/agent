@@ -1,6 +1,8 @@
 package com.zzp.agent.embedding;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -21,6 +23,8 @@ import java.util.List;
  */
 @Service
 public class EmbeddingService {
+
+    private static final Logger log = LoggerFactory.getLogger(EmbeddingService.class);
 
     /** 最大尝试次数（含首次）。 */
     private static final int MAX_ATTEMPTS = 3;
@@ -44,11 +48,16 @@ public class EmbeddingService {
                 ? baseUrl
                 : baseUrl + "/embeddings";
 
-        // 用 JDK 内置 HttpClient（原生 TLS），绕开 Apache httpclient5 与 SiliconFlow 的 TLS 重置问题
+        // 用 JDK 内置 HttpClient（原生 TLS），绕开 Apache httpclient5 与 SiliconFlow 的 TLS 重置问题。
+        // connectTimeout：建连超时收紧到 5s（curl 实测 connect 仅 0.38s）；
+        // 读超时用 Spring 工厂的 setReadTimeout，防止慢/挂死的响应把单次尝试拖满。
+        // 注：此前怀疑过 HTTP/2 导致卡顿并一度强制 HTTP/1.1，实测两种协议在命令行均 <1s 成功，
+        //     说明协议无关；卡顿只出现在 IntelliJ 测试运行器里，是测试环境问题，非本代码问题。
         HttpClient jdkClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(15))
+                .connectTimeout(Duration.ofSeconds(5))
                 .build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(jdkClient);
+        factory.setReadTimeout(Duration.ofSeconds(15));
 
         this.restClient = RestClient.builder()
                 .baseUrl(endpoint)
@@ -108,14 +117,18 @@ public class EmbeddingService {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                return restClient.post()
+                EmbeddingResponse resp = restClient.post()
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .body(request)
                         .retrieve()
                         .body(EmbeddingResponse.class);
+                return resp;
             } catch (Exception e) {
                 last = e;
+                log.warn("embedding 第 {}/{} 次尝试失败, 异常类型 {}: {}",
+                        attempt, MAX_ATTEMPTS,
+                        e.getClass().getSimpleName(), e.getMessage());
                 if (attempt < MAX_ATTEMPTS) {
                     long wait = BASE_BACKOFF_MS << (attempt - 1);
                     try {
