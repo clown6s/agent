@@ -29,7 +29,13 @@ public class EmbeddingService {
     /** 最大尝试次数（含首次）。 */
     private static final int MAX_ATTEMPTS = 3;
     /** 首次退避基数（毫秒），之后逐次翻倍。 */
-    private static final long BASE_BACKOFF_MS = 500L;
+    private static final long BASE_BACKOFF_MS = 1000L;
+    /**
+     * 读超时（秒）。实测 SiliconFlow /v1/embeddings 延迟方差极大：多数 <0.2s，
+     * 但会间歇性窜到 2~6s（偶发更久）；15s 曾被这些慢响应撞上而误判“Request cancelled”。
+     * 提到 60s 给足余量，避免把“慢但合法”的响应当失败取消。
+     */
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(60);
     /** 单次请求最多嵌多少段文本。整份文档一次塞进一个数组会让请求体过大，SiliconFlow 会 500/超时，
      * 故按此子批量切分，分批向量化后按序拼接（curl 实测 N≤100 可通过，取 64 留余量）。 */
     private static final int BATCH_SIZE = 64;
@@ -50,14 +56,12 @@ public class EmbeddingService {
 
         // 用 JDK 内置 HttpClient（原生 TLS），绕开 Apache httpclient5 与 SiliconFlow 的 TLS 重置问题。
         // connectTimeout：建连超时收紧到 5s（curl 实测 connect 仅 0.38s）；
-        // 读超时用 Spring 工厂的 setReadTimeout，防止慢/挂死的响应把单次尝试拖满。
-        // 注：此前怀疑过 HTTP/2 导致卡顿并一度强制 HTTP/1.1，实测两种协议在命令行均 <1s 成功，
-        //     说明协议无关；卡顿只出现在 IntelliJ 测试运行器里，是测试环境问题，非本代码问题。
+        // 读超时用 READ_TIMEOUT（60s，实测该端点延迟会间歇性窜到数秒），防止慢/挂死的响应把单次尝试拖满。
         HttpClient jdkClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .build();
         JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(jdkClient);
-        factory.setReadTimeout(Duration.ofSeconds(15));
+        factory.setReadTimeout(READ_TIMEOUT);
 
         this.restClient = RestClient.builder()
                 .baseUrl(endpoint)
@@ -112,10 +116,11 @@ public class EmbeddingService {
         return out;
     }
 
-    /** 指数退避重试调一次 /embeddings，吞掉偶发的限流/连接重置。 */
+    /** 指数退避重试调一次 /embeddings，吞掉偶发的超时/连接重置。 */
     private EmbeddingResponse postWithRetry(EmbeddingRequest request) {
         Exception last = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            long start = System.nanoTime();
             try {
                 EmbeddingResponse resp = restClient.post()
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
@@ -126,8 +131,13 @@ public class EmbeddingService {
                 return resp;
             } catch (Exception e) {
                 last = e;
-                log.warn("embedding 第 {}/{} 次尝试失败, 异常类型 {}: {}",
-                        attempt, MAX_ATTEMPTS,
+                long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+                // 实测 SiliconFlow 慢响应撞上 read timeout 时，Spring 会把超时包装成误导性的
+                // "Request cancelled"（根因是 HttpTimeoutException）。这里把耗时一起打出来，方便区分：
+                // 耗时≈READ_TIMEOUT → 超时被取消；耗时很短 → 连接/建连被重置。
+                log.warn("embedding 第 {}/{} 次尝试失败, 耗时 {}ms ({}) 异常 {}: {}",
+                        attempt, MAX_ATTEMPTS, elapsedMs,
+                        (elapsedMs >= READ_TIMEOUT.toMillis() ? "超时" : "其他"),
                         e.getClass().getSimpleName(), e.getMessage());
                 if (attempt < MAX_ATTEMPTS) {
                     long wait = BASE_BACKOFF_MS << (attempt - 1);

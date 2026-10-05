@@ -1,6 +1,7 @@
 package com.zzp.agent.controller.agent;
 
 import com.alibaba.cloud.ai.graph.NodeOutput;
+import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.state.StateSnapshot;
 import com.zzp.agent.common.ApiResponse;
 import com.zzp.agent.graph.AgentGraphService;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,11 +39,12 @@ public class AgentController {
     }
 
     /**
-     * 流式 SSE 返回：订阅 graph 的 {@code stream(Map)}，把每个 {@link NodeOutput} 推送给前端。
-     * <p>最末 NodeOutput（isEND）的 state 里含最终 answer / sources，前端据此渲染完整回答。
+     * 流式 SSE 返回：订阅 graph 的 {@code stream(Map)}。
+     * <p>每个非终止节点推一条 {@code node} 事件（带节点名），最末 END 节点推一条 {@code result}
+     * 事件，内含最终 answer / sources，前端据此渲染完整回答。
      *
      * @param req body 形如 {@code {"query": "上季度销售额top5的客户"}}
-     * @return SseEmitter，逐条事件为 {@code node}（含 node 名与阶段）
+     * @return SseEmitter，事件名为 {@code node} / {@code result}
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestBody Map<String, String> req) {
@@ -56,7 +59,18 @@ public class AgentController {
         flux.subscribe(
                 output -> {
                     try {
-                        emitter.send(SseEmitter.event().name("node").data(output));
+                        if (output.isEND()) {
+                            OverAllState state = output.state();
+                            Map<String, Object> result = new HashMap<>();
+                            result.put("answer", state.value(AgentGraphService.ANSWER).orElse(""));
+                            result.put("sources", state.value(AgentGraphService.SOURCES).orElse(List.of()));
+                            emitter.send(SseEmitter.event().name("result").data(result));
+                        } else {
+                            Map<String, Object> meta = new HashMap<>();
+                            meta.put("node", output.node());
+                            meta.put("start", output.isSTART());
+                            emitter.send(SseEmitter.event().name("node").data(meta));
+                        }
                     } catch (Exception e) {
                         emitter.completeWithError(e);
                     }

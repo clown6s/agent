@@ -33,9 +33,11 @@ import java.util.concurrent.CompletableFuture;
  * </pre>
  * <ul>
  *   <li><b>agent 节点</b>：用 LLM 判断提问意图（{@link AgentIntentResolver}），写入 state 的 {@code intent}；</li>
- *   <li><b>tools 节点</b>：意图为 TOOLS 时进入，调 {@link AgentTool}（默认 {@link SearchDocsAgentTool}），
+ *   <li><b>answer / tools 节点</b>：意图为 CHAT 进 {@code answer}、TOOLS 进 {@code tools}，
+ *       两者调同一 {@link AgentTool}（默认 {@link SearchDocsAgentTool}），
  *       把回答写进 state 的 {@code answer}、来源写进 {@code sources}；</li>
- *   <li><b>条件路由</b>：{@code intent==CHAT → END}，{@code intent==TOOLS → tools}。</li>
+ *   <li><b>条件路由</b>：{@code intent==CHAT → answer}，{@code intent==TOOLS → tools}。
+ *       interruptGraph 只对 {@code tools} 做 interruptBefore，故仅 TOOLS 路径会中断等待人工确认。</li>
  * </ul>
  *
  * <p>state 键统一走常量 {@link #QUERY} / {@link #INTENT} / {@link #ANSWER} / {@link #SOURCES}，避免魔法字符串。
@@ -84,8 +86,10 @@ public class AgentGraphService {
             return CompletableFuture.completedFuture(Map.of(INTENT, intent.name()));
         };
 
-        // tools 节点：调真实工具（默认 search_docs），把回答和来源写回 state
-        AsyncNodeAction toolsNode = state -> {
+        // 回答节点：调真实工具（默认 search_docs），把回答和来源写回 state。
+        // CHAT（知识问答/基于资料）与 TOOLS（需查库计算）都走这里产生 answer；
+        // interruptGraph 只对 "tools" 节点 interruptBefore，因此仅 TOOLS 路径会暂停等待人工确认。
+        AsyncNodeAction answerNode = state -> {
             String query = String.valueOf(state.value(QUERY).orElse(""));
             // 多轮时带上上一轮上下文（若无则为 null，工具退化为单轮）
             String history = state.value(HISTORY).map(String::valueOf).orElse(null);
@@ -102,11 +106,13 @@ public class AgentGraphService {
 
         StateGraph graph = new StateGraph()
                 .addNode("agent", agentNode)
-                .addNode("tools", toolsNode)
+                .addNode("answer", answerNode)
+                .addNode("tools", answerNode)
                 .addEdge(StateGraph.START, "agent")
                 .addConditionalEdges("agent", route, Map.of(
-                        Intent.CHAT.name(), StateGraph.END,
+                        Intent.CHAT.name(), "answer",
                         Intent.TOOLS.name(), "tools"))
+                .addEdge("answer", StateGraph.END)
                 .addEdge("tools", StateGraph.END);
         return config == null ? graph.compile() : graph.compile(config);
     }
