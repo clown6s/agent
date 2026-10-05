@@ -20,6 +20,7 @@ public class DocumentController {
     private final DocumentIntakeService documentIntakeService;
     private final QueryDocumentService queryDocumentService;
 
+
     public DocumentController(DocumentIntakeService documentIntakeService,
                               QueryDocumentService queryDocumentService) {
         this.documentIntakeService = documentIntakeService;

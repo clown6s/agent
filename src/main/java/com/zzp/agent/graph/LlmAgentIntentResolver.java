@@ -27,9 +27,22 @@ public class LlmAgentIntentResolver implements AgentIntentResolver {
 
     @Override
     public Intent resolve(String query) {
+        return resolve(query, null);
+    }
+
+    /**
+     * 多轮意图判断：把上一轮上下文（历史回答 + 来源）随用户问题一起交给 LLM，
+     * 让 follow-up 追问（如"你说的那top5，下季度呢"）能基于上文正确判为 TOOLS，
+     * 而不是因为措辞不含难词就降级成 CHAT。
+     */
+    @Override
+    public Intent resolve(String query, String history) {
+        String userPrompt = (history == null || history.isBlank())
+                ? "用户提问：" + query
+                : "上一轮上下文：\n" + history + "\n\n用户新一轮提问：" + query;
         String raw = chatClient.prompt()
                 .system(SYSTEM_PROMPT)
-                .user(query)
+                .user(userPrompt)
                 .call()
                 .content();
         String up = raw == null ? "" : raw.trim().toUpperCase();
