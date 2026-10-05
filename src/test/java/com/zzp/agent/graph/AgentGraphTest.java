@@ -6,6 +6,7 @@ import com.zzp.agent.common.document.DocHitResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.tool.ToolCallback;
 
 import java.util.ArrayList;
@@ -32,6 +33,8 @@ class AgentGraphTest {
     private static final class ScriptedPlanner implements AgentPlanner {
         final List<AssistantMessage> steps;
         final List<Integer> seenIterations = new ArrayList<>();
+        /** 最近一次 plan() 看到的完整历史，用于直接断言"断点续跑是否把 MESSAGES 合并回上下文"。 */
+        List<Message> lastHistory = List.of();
 
         ScriptedPlanner(List<AssistantMessage> steps) {
             this.steps = steps;
@@ -40,6 +43,7 @@ class AgentGraphTest {
         @Override
         public AssistantMessage plan(List<Message> history, List<ToolCallback> tools, int iteration) {
             seenIterations.add(iteration);
+            lastHistory = history;
             int idx = Math.min(iteration, steps.size() - 1);
             return steps.get(idx);
         }
@@ -325,5 +329,25 @@ class AgentGraphTest {
         assertEquals(1, tool.calls.size(), "宽容解析降级为空参后工具仍应执行");
         assertEquals("基于检索结果作答完成。", state.get().value(AgentGraphService.ANSWER).orElse(null),
                 "坏参数路径也应正常收尾产出回答");
+    }
+
+    @Test
+    void resume_preservesPriorUserMessage_inAgentHistory() throws Exception {
+        FakeTool tool = new FakeTool("search_docs", "命中文本");
+        ScriptedPlanner planner = new ScriptedPlanner(List.of(
+                toolCallMsg("要检索", "search_docs", "t1"),
+                finalMsg("完成。")));
+        AgentGraphService svc = new AgentGraphService(new ToolRegistry(List.of(tool)), planner);
+
+        svc.runForApproval("sess-m", "查一下X");
+        assertTrue(svc.pendingApproval("sess-m").isPresent(), "首次应停在工具循环前");
+
+        Optional<OverAllState> state = svc.resumeAgent("sess-m");
+        assertTrue(state.isPresent(), "断点恢复应跑完");
+        // 直接断言：恢复后 agent 那一轮看到的 history 里仍含原始用户提问——证明 KeyStrategy(REPLACE)
+        // 的显式注册把 MESSAGES 合并过了断点，而非恢复到空上下文（那会让续跑的工具循环失去上文）。
+        boolean hasQuery = planner.lastHistory.stream()
+                .anyMatch(m -> m instanceof UserMessage um && "查一下X".equals(um.getText()));
+        assertTrue(hasQuery, "断点续跑应把原始用户提问合并进 agent 思考历史");
     }
 }
