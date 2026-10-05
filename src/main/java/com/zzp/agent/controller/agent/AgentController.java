@@ -92,12 +92,20 @@ public class AgentController {
             return ApiResponse.fail(400, "threadId 与 query 均必填");
         }
         try {
-            agentGraphService.runForApproval(threadId, query);
+            var runResult = agentGraphService.runForApproval(threadId, query);
             Optional<StateSnapshot> pending = agentGraphService.pendingApproval(threadId);
             boolean waiting = pending.isPresent();
-            return ApiResponse.ok(Map.of(
-                    "threadId", threadId,
-                    "waitingApproval", waiting));
+            Map<String, Object> res = new HashMap<>();
+            res.put("threadId", threadId);
+            res.put("waitingApproval", waiting);
+            // 纯聊天（无工具、不中断，直接跑完）时，把最终 answer/sources 一并返回——否则答案在此端点取不回。
+            if (!waiting) {
+                runResult.ifPresent(s -> {
+                    res.put("answer", s.value(AgentGraphService.ANSWER).orElse(""));
+                    res.put("sources", s.value(AgentGraphService.SOURCES).orElse(List.of()));
+                });
+            }
+            return ApiResponse.ok(res);
         } catch (Exception e) {
             return ApiResponse.fail(500, "中断式执行失败: " + e.getMessage());
         }

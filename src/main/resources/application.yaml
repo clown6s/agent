@@ -30,3 +30,8 @@ embedding:
   apiKey: ${SILICONFLOW_API_KEY}
   model: ${EMBEDDING_MODEL}
 
+# Agent 多步 function-calling 编排参数
+agent:
+  # 单条回答允许的工具调用轮数上限（图层里的硬约束，控制"结果相互依赖"多步循环的停止条件）
+  maxIterations: ${AGENT_MAX_ITERATIONS:5}
+
